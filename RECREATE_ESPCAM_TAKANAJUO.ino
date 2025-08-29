@@ -1,16 +1,14 @@
-#include <WiFi.h>
-#include <WebServer.h>
+#include "FS.h"
+#include "SD_MMC.h"
 #include "esp_camera.h"
 
 // ===============================================================
-// PENGATURAN - SILAKAN UBAH BAGIAN INI
+// PENGATURAN
 // ===============================================================
+// Pengaturan Timer untuk Simpan ke SD Card (dalam milidetik)
+const int captureIntervalSeconds = 5; // Ambil gambar setiap 5 detik
 
-// Ganti dengan kredensial WiFi Anda
-const char* ssid = "anbi";
-const char* password = "88888888";
-
-// Model Kamera yang digunakan (AI-THINKER)
+// Model Kamera (AI-THINKER)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -27,178 +25,16 @@ const char* password = "88888888";
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-
-// ===============================================================
-// AKHIR DARI PENGATURAN
 // ===============================================================
 
-WebServer server(80);
-
-const char* HTML_PAGE = R"=====(
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DASHBOARD AI TAKANA JUO</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #2c3e50;
-            color: #ecf0f1;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-        }
-        .container {
-            text-align: center;
-            padding: 20px;
-            border-radius: 15px;
-            background-color: #34495e;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #3498db;
-            margin-bottom: 20px;
-            font-size: 2em;
-        }
-        #stream-container {
-            border: 5px solid #3498db;
-            border-radius: 10px;
-            overflow: hidden;
-            min-width: 320px;
-            max-width: 640px;
-            width: 100%;
-            margin: 0 auto 20px auto;
-            background-color: #000;
-        }
-        #stream {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-        .btn-container {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-        }
-        button {
-            background-color: #3498db;
-            color: white;
-            border: none;
-            padding: 12px 25px;
-            font-size: 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: background-color 0.3s, transform 0.2s;
-        }
-        button:hover {
-            background-color: #2980b9;
-            transform: scale(1.05);
-        }
-        .footer {
-            margin-top: 30px;
-            font-size: 0.8em;
-            color: #95a5a6;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>DASHBOARD AI TAKANA JUO</h1>
-        <div id="stream-container">
-            <img id="stream" src="/stream" alt="Memuat Stream Kamera...">
-        </div>
-        <div class="btn-container">
-            <button onclick="captureImage()">Ambil Gambar</button>
-        </div>
-        <p class="footer">Dibuat dengan ESP32-CAM</p>
-    </div>
-
-    <script>
-        function captureImage() {
-            window.open('/capture', '_blank');
-        }
-        
-        const streamImg = document.getElementById('stream');
-        streamImg.onerror = function() {
-            console.log("Stream error, attempting to reconnect in 2 seconds...");
-            setTimeout(() => {
-                // Tambahkan timestamp untuk mencegah browser menggunakan cache
-                streamImg.src = "/stream?" + new Date().getTime();
-            }, 2000);
-        };
-    </script>
-</body>
-</html>
-)=====";
-
-void handleRoot() {
-    server.send(200, "text/html", HTML_PAGE);
-}
-
-// ===============================================================
-// FUNGSI INI TELAH DIPERBAIKI
-// ===============================================================
-void handleStream() {
-    WiFiClient client = server.client();
-    String response = "HTTP/1.1 200 OK\r\n";
-    response += "Content-Type: multipart/x-mixed-replace; boundary=--frame\r\n";
-    response += "Access-Control-Allow-Origin: *\r\n";
-    response += "\r\n";
-    client.print(response);
-
-    while (true) {
-        if (!client.connected()) {
-            break; // Keluar dari loop jika client terputus
-        }
-
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb) {
-            Serial.println("Gagal mengambil frame dari kamera");
-            continue; // Coba lagi
-        }
-
-        client.print("--frame\r\n");
-        client.print("Content-Type: image/jpeg\r\n");
-        client.print("Content-Length: ");
-        client.print(fb->len);
-        client.print("\r\n\r\n");
-        
-        client.write(fb->buf, fb->len);
-        
-        client.print("\r\n");
-        
-        esp_camera_fb_return(fb);
-    }
-    Serial.println("Streaming dihentikan, client terputus.");
-}
-// ===============================================================
-
-void handleCapture() {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-        Serial.println("Gagal mengambil frame untuk foto");
-        server.send(500, "text/plain", "Gagal mengambil gambar");
-        return;
-    }
-    
-    server.sendHeader("Content-Type", "image/jpeg");
-    server.sendHeader("Content-Disposition", "inline; filename=capture.jpg");
-    server.send_P(200, "image/jpeg", (const char*)fb->buf, fb->len);
-    
-    esp_camera_fb_return(fb);
-}
-
+// Variabel untuk menghitung nomor file gambar
+int pictureCounter = 0;
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("\nMemulai ESP32-CAM...");
+    Serial.println("\nMemulai ESP32-CAM Mode Time-Lapse...");
 
+    // Konfigurasi Kamera
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -219,51 +55,72 @@ void setup() {
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-
+    config.pixel_format = PIXFORMAT_JPEG; // Format kompresi bawaan, efisien
+    
+    // Atur resolusi dan kualitas ke TERBAIK
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_UXGA;
-        config.jpeg_quality = 10;
+        config.frame_size = FRAMESIZE_UXGA;  // Resolusi tertinggi (1600x1200)
+        config.jpeg_quality = 10;           // Kualitas terbaik (angka lebih rendah = kualitas lebih baik)
         config.fb_count = 2;
     } else {
-        config.frame_size = FRAMESIZE_SVGA;
+        config.frame_size = FRAMESIZE_SVGA;  // Resolusi maksimal tanpa PSRAM
         config.jpeg_quality = 12;
         config.fb_count = 1;
     }
 
+    // Inisialisasi kamera
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         Serial.printf("Inisialisasi kamera gagal dengan error 0x%x", err);
         ESP.restart();
     }
-    
     Serial.println("Kamera berhasil diinisialisasi.");
 
-    sensor_t * s = esp_camera_sensor_get();
-    // Resolusi VGA (640x480) adalah resolusi yang baik untuk streaming
-    s->set_framesize(s, FRAMESIZE_VGA); 
-    s->set_vflip(s, 1);
-    s->set_hmirror(s, 0);
-
-    WiFi.begin(ssid, password);
-    Serial.print("Menghubungkan ke WiFi ");
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+    // Inisialisasi SD Card
+    if(!SD_MMC.begin()){
+        Serial.println("Inisialisasi SD Card Gagal! Periksa kartu dan coba lagi.");
+        return; // Hentikan program jika SD card gagal
     }
-    Serial.println("\nWiFi terhubung!");
-
-    Serial.print("Dashboard dapat diakses di: http://");
-    Serial.println(WiFi.localIP());
-
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/stream", HTTP_GET, handleStream);
-    server.on("/capture", HTTP_GET, handleCapture);
-
-    server.begin();
-    Serial.println("Web server dimulai.");
+    
+    uint8_t cardType = SD_MMC.cardType();
+    if(cardType == CARD_NONE){
+        Serial.println("Tidak ada SD Card terpasang.");
+        return;
+    }
+    
+    Serial.println("SD Card berhasil diinisialisasi. Siap mengambil gambar.");
 }
 
 void loop() {
-    server.handleClient();
+    Serial.printf("Mengambil gambar ke-%d...\n", pictureCounter);
+    
+    // Ambil frame dari kamera
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("Gagal mengambil frame dari kamera.");
+        delay(1000); // Tunggu sejenak sebelum mencoba lagi
+        return;
+    }
+
+    // Buat nama file yang unik
+    String path = "/timelapse_" + String(pictureCounter) + ".jpg";
+
+    // Buka file di SD card untuk ditulis
+    File file = SD_MMC.open(path.c_str(), FILE_WRITE);
+    if (!file) {
+        Serial.println("Gagal membuat file di SD Card.");
+    } else {
+        // Tulis buffer gambar ke file
+        file.write(fb->buf, fb->len);
+        Serial.printf("Gambar berhasil disimpan ke: %s\n", path.c_str());
+        pictureCounter++;
+    }
+    file.close();
+
+    // Kembalikan frame buffer (SANGAT PENTING!)
+    esp_camera_fb_return(fb);
+
+    // Tunggu sesuai interval yang ditentukan
+    Serial.printf("Menunggu %d detik untuk pengambilan berikutnya...\n\n", captureIntervalSeconds);
+    delay(captureIntervalSeconds * 1000);
 }
