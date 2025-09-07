@@ -1,10 +1,9 @@
 /*********
- * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI PENOMORAN PERSISTEN)
+ * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI PERBAIKAN ORIENTASI)
  * -------------------------------------------------------------------------------
  * Perbaikan:
- * - Menambahkan logika di setup() untuk mengecek file terakhir di SD Card,
- * sehingga penomoran foto tidak mereset (overwrite) saat restart.
- * - Tetap efisien dengan deteksi intermiten dan menjaga resolusi VGA.
+ * - Menambahkan kode untuk membalik gambar secara vertikal (vflip) setelah
+ * inisialisasi kamera untuk mengatasi masalah sensor yang terbalik.
  *********************************************************************************/
 
 // Pustaka yang dibutuhkan
@@ -62,7 +61,7 @@ const char* password = "88888888";
 // Variabel global
 static int face_detect_enabled = 1; 
 static int save_to_sd_enabled = 1;  
-static int photo_count = 0; // Akan diupdate di setup()         
+static int photo_count = 0;        
 static unsigned long last_save_time = 0;
 static long frame_counter = 0;
 
@@ -111,7 +110,7 @@ void saveFrameToSD(camera_fb_t *fb) {
     Serial.printf("Gagal membuka file %s\n", path.c_str());
   } else {
     file.write(_jpg_buf, _jpg_buf_len);
-    Serial.printf("Foto disimpan: %s (%d bytes)\n", path.c_str(), _jpg_buf_len);
+    Serial.printf("Foto disimpan: %s (%d bytes)\n", path.c_str(), photo_count);
     photo_count++;
   }
   file.close();
@@ -193,48 +192,8 @@ static esp_err_t index_handler(httpd_req_t *req){
   httpd_resp_set_type(req, "text/html");
   String ip = WiFi.localIP().toString();
   String html = R"rawliteral(
-    <html>
-    <head>
-        <title>ESP CAM Takana Juo - 102</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                text-align: center;
-                margin: 20px;
-                background-color: #CC3322; /* Latar Belakang Merah */
-                color: #FFED00;            /* WARNA TEKS DEFAULT MENJADI KUNING */
-            }
-            h1 {
-                /* Tidak perlu setting warna lagi karena sudah ikut body */
-            }
-            #stream-container {
-                border: 2px solid #FFED00; /* Border juga diganti kuning agar serasi */
-                display: inline-block;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-                max-width: 95%;
-            }
-            img {
-                max-width: 100%;
-                height: auto;
-                display: block;
-            }
-            /* Style untuk 'p' tidak perlu warna lagi, karena akan ikut 'body' */
-            p {
-                font-weight: bold; /* Dibuat tebal agar lebih mudah dibaca */
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Dashboard ESP CAM Takana Juo - 102</h1>
-        <div id="stream-container">
-            <img src="/stream">
-        </div>
-        <p>Saat wajah terdeteksi, foto akan disimpan ke SD Card.</p>
-        <p>Kualitas foto: 640x480 (sama dengan stream)</p>
-    </body>
-    </html>
-)rawliteral";
+    <html><head><title>ESP CAM Takana Juo</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #CC3322;}h1{color: #FFED00;}#stream-container{border: 2px solid #FFED00; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.2); max-width: 95%;}img{max-width: 100%; height: auto; display: block;}p{font-weight: bold; color: #FFED00;}</style></head><body><h1>Dashboard ESP CAM Takana Juo</h1><div id="stream-container"><img src="/stream"></div><p>Saat wajah terdeteksi, foto akan disimpan ke SD Card.</p><p>Kualitas foto: 640x480 (sama dengan stream)</p></body></html>
+  )rawliteral";
   return httpd_resp_send(req, html.c_str(), html.length());
 }
 
@@ -287,24 +246,28 @@ void setup() {
   }
   Serial.println("Kamera berhasil diinisialisasi");
 
+  // --- PERBAIKAN ORIENTASI GAMBAR ---
+  sensor_t *s = esp_camera_sensor_get();
+  // Atur '1' untuk mengaktifkan, '0' untuk menonaktifkan.
+  s->set_vflip(s, 1);     // Membalik gambar secara vertikal (atas-bawah)
+  s->set_hmirror(s, 0);   // Membalik gambar secara horizontal (kiri-kanan)
+  // ------------------------------------
+
   if (!SD_MMC.begin()) {
-    Serial.println("Gagal me-mount SD Card. Fitur simpan foto dinonaktifkan.");
+    Serial.println("Gagal me-mount SD Card.");
     save_to_sd_enabled = 0;
   } else {
     Serial.println("SD Card berhasil diinisialisasi.");
     
-    // --- BLOK KODE BARU UNTUK PENOMORAN PERSISTEN ---
-    photo_count = 0; // Mulai pengecekan dari 0
+    photo_count = 0;
     while (true) {
       String path = "/face_capture_" + String(photo_count) + ".jpg";
       if (!SD_MMC.exists(path)) {
-        // Jika file tidak ada, kita temukan nomor berikutnya yang kosong.
         break; 
       }
-      photo_count++; // Jika file ada, coba nomor berikutnya.
+      photo_count++;
     }
     Serial.printf("Penyimpanan foto akan dimulai dari: face_capture_%d.jpg\n", photo_count);
-    // ----------------------------------------------------
   }
 
   WiFi.begin(ssid, password);
