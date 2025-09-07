@@ -1,9 +1,10 @@
 /*********
- * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI STABIL & LANCAR v2)
+ * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI KUALITAS VGA)
  * --------------------------------------------------------------------------
  * Perbaikan:
- * - Memperbaiki inisialisasi struct 'fb_data_t' yang menyebabkan error kompilasi.
- * - Fokus pada stabilitas dan kelancaran stream.
+ * - Resolusi ditingkatkan ke VGA (640x480) untuk kualitas gambar yang lebih baik.
+ * - Lampu flash LED dinonaktifkan secara permanen.
+ * - Tetap stabil dengan tidak mengubah resolusi saat menyimpan foto.
  *********************************************************************************/
 
 // Pustaka yang dibutuhkan
@@ -11,8 +12,8 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "fb_gfx.h"
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
+#include "soc/soc.h"          // Untuk mengatasi brownout detector
+#include "soc/rtc_cntl_reg.h" // Untuk mengatasi brownout detector
 #include "driver/ledc.h"
 #include <WiFi.h>
 #include "SD_MMC.h"
@@ -29,9 +30,9 @@ const char* ssid = "anbi";
 const char* password = "88888888";
 
 // Pengaturan Kamera & Kualitas
-#define STREAM_FRAME_SIZE FRAMESIZE_CIF
-#define STREAM_JPEG_QUALITY 15
-#define SAVE_COOLDOWN_SECONDS 5
+#define STREAM_FRAME_SIZE FRAMESIZE_VGA     // Resolusi untuk streaming & foto (640x480)
+#define STREAM_JPEG_QUALITY 15              // Kualitas JPEG (10-63, lebih rendah lebih baik/lancar)
+#define SAVE_COOLDOWN_SECONDS 5             // Jeda antar penyimpanan foto (dalam detik)
 
 // Definisi warna untuk kotak deteksi
 #define FACE_COLOR_GREEN 0x0000FF00
@@ -53,6 +54,7 @@ const char* password = "88888888";
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
+#define FLASH_GPIO_NUM     4  // Pin untuk lampu flash LED
 
 // Variabel global
 static int face_detect_enabled = 1; 
@@ -137,15 +139,12 @@ static esp_err_t stream_handler(httpd_req_t *req) {
           std::list<dl::detect::result_t> &results = s2.infer((uint16_t *)fb->buf, {(int)fb->height, (int)fb->width, 3}, candidates);
           
           if (!results.empty()) {
-            // --- FIX DISINI ---
-            // Inisialisasi struct satu per satu untuk menghindari error
             fb_data_t rfb;
             rfb.width = fb->width;
             rfb.height = fb->height;
             rfb.data = fb->buf;
             rfb.bytes_per_pixel = 2;
             rfb.format = FB_RGB565;
-            // --------------------
             
             draw_face_boxes(&rfb, &results);
 
@@ -197,7 +196,7 @@ static esp_err_t index_handler(httpd_req_t *req){
       <style>
         body { font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #f4f4f4; }
         h1 { color: #333; }
-        #stream-container { border: 2px solid #ccc; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #stream-container { border: 2px solid #ccc; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 95%;}
         img { max-width: 100%; height: auto; display: block; }
         p { color: #555; }
         a { color: #007bff; text-decoration: none; font-weight: bold; }
@@ -209,7 +208,7 @@ static esp_err_t index_handler(httpd_req_t *req){
         <img src="/stream">
       </div>
       <p>Saat wajah terdeteksi, foto akan disimpan ke SD Card.</p>
-      <p>Kualitas foto: 400x296 (sama dengan stream)</p>
+      <p>Kualitas foto: 640x480 (sama dengan stream)</p>
     </body>
     </html>
   )rawliteral";
@@ -228,13 +227,16 @@ void startCameraServer() {
   }
 }
 
-// Fungsi setup utama
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  Serial.println("\n--- ESP32-CAM Face Detect & Save (Stabil) ---");
+  Serial.println("\n--- ESP32-CAM Face Detect & Save (VGA) ---");
+
+  // BARU: Nonaktifkan lampu flash LED secara permanen
+  pinMode(FLASH_GPIO_NUM, OUTPUT);
+  digitalWrite(FLASH_GPIO_NUM, LOW);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -248,7 +250,7 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   
   config.pixel_format = PIXFORMAT_RGB565;
-  config.frame_size = STREAM_FRAME_SIZE;
+  config.frame_size = STREAM_FRAME_SIZE; // Menggunakan resolusi VGA
   
   config.jpeg_quality = STREAM_JPEG_QUALITY;
   config.fb_count = 2;
