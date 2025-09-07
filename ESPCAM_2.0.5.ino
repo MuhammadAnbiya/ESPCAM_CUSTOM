@@ -1,10 +1,10 @@
 /*********
- * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI KUALITAS VGA)
- * --------------------------------------------------------------------------
+ * Proyek ESP32-CAM Deteksi Wajah dan Simpan ke SD Card (VERSI PENOMORAN PERSISTEN)
+ * -------------------------------------------------------------------------------
  * Perbaikan:
- * - Resolusi ditingkatkan ke VGA (640x480) untuk kualitas gambar yang lebih baik.
- * - Lampu flash LED dinonaktifkan secara permanen.
- * - Tetap stabil dengan tidak mengubah resolusi saat menyimpan foto.
+ * - Menambahkan logika di setup() untuk mengecek file terakhir di SD Card,
+ * sehingga penomoran foto tidak mereset (overwrite) saat restart.
+ * - Tetap efisien dengan deteksi intermiten dan menjaga resolusi VGA.
  *********************************************************************************/
 
 // Pustaka yang dibutuhkan
@@ -12,8 +12,8 @@
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "fb_gfx.h"
-#include "soc/soc.h"          // Untuk mengatasi brownout detector
-#include "soc/rtc_cntl_reg.h" // Untuk mengatasi brownout detector
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 #include "driver/ledc.h"
 #include <WiFi.h>
 #include "SD_MMC.h"
@@ -30,9 +30,12 @@ const char* ssid = "anbi";
 const char* password = "88888888";
 
 // Pengaturan Kamera & Kualitas
-#define STREAM_FRAME_SIZE FRAMESIZE_VGA     // Resolusi untuk streaming & foto (640x480)
-#define STREAM_JPEG_QUALITY 15              // Kualitas JPEG (10-63, lebih rendah lebih baik/lancar)
-#define SAVE_COOLDOWN_SECONDS 5             // Jeda antar penyimpanan foto (dalam detik)
+#define STREAM_FRAME_SIZE FRAMESIZE_VGA
+#define STREAM_JPEG_QUALITY 15
+#define SAVE_COOLDOWN_SECONDS 5
+
+// Pengaturan Efisiensi
+#define DETECTION_INTERVAL 5
 
 // Definisi warna untuk kotak deteksi
 #define FACE_COLOR_GREEN 0x0000FF00
@@ -54,13 +57,14 @@ const char* password = "88888888";
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-#define FLASH_GPIO_NUM     4  // Pin untuk lampu flash LED
+#define FLASH_GPIO_NUM     4
 
 // Variabel global
 static int face_detect_enabled = 1; 
 static int save_to_sd_enabled = 1;  
-static int photo_count = 0;         
+static int photo_count = 0; // Akan diupdate di setup()         
 static unsigned long last_save_time = 0;
+static long frame_counter = 0;
 
 // Inisialisasi model deteksi wajah
 static HumanFaceDetectMSR01 s1(0.1F, 0.5F, 10, 0.2F);
@@ -85,19 +89,18 @@ static void draw_face_boxes(fb_data_t *fb, std::list<dl::detect::result_t> *resu
     }
 }
 
-// Fungsi untuk menyimpan frame yang sedang di-stream ke SD Card
+// Fungsi untuk menyimpan frame ke SD Card
 void saveFrameToSD(camera_fb_t *fb) {
-  if (!fb) {
-    Serial.println("Frame kosong, penyimpanan dibatalkan.");
-    return;
-  }
+  if (!fb) return;
+
+  digitalWrite(FLASH_GPIO_NUM, LOW);
 
   uint8_t *_jpg_buf = NULL;
   size_t _jpg_buf_len = 0;
   bool jpeg_converted = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, PIXFORMAT_RGB565, STREAM_JPEG_QUALITY, &_jpg_buf, &_jpg_buf_len);
   
   if (!jpeg_converted) {
-    Serial.println("Konversi ke JPEG untuk penyimpanan gagal.");
+    Serial.println("Konversi JPEG untuk simpan gagal.");
     return;
   }
 
@@ -130,11 +133,13 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   while (true) {
     fb = esp_camera_fb_get();
+    frame_counter++; 
+
     if (!fb) {
       Serial.println("Gagal mengambil frame");
       res = ESP_FAIL;
     } else {
-      if (face_detect_enabled && fb->format == PIXFORMAT_RGB565) {
+      if (face_detect_enabled && fb->format == PIXFORMAT_RGB565 && (frame_counter % DETECTION_INTERVAL == 0)) {
           std::list<dl::detect::result_t> &candidates = s1.infer((uint16_t *)fb->buf, {(int)fb->height, (int)fb->width, 3});
           std::list<dl::detect::result_t> &results = s2.infer((uint16_t *)fb->buf, {(int)fb->height, (int)fb->width, 3}, candidates);
           
@@ -145,7 +150,6 @@ static esp_err_t stream_handler(httpd_req_t *req) {
             rfb.data = fb->buf;
             rfb.bytes_per_pixel = 2;
             rfb.format = FB_RGB565;
-            
             draw_face_boxes(&rfb, &results);
 
             if (save_to_sd_enabled && (millis() - last_save_time > SAVE_COOLDOWN_SECONDS * 1000)) {
@@ -191,33 +195,53 @@ static esp_err_t index_handler(httpd_req_t *req){
   String html = R"rawliteral(
     <html>
     <head>
-      <title>ESP32-CAM Stabil</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #f4f4f4; }
-        h1 { color: #333; }
-        #stream-container { border: 2px solid #ccc; display: inline-block; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 95%;}
-        img { max-width: 100%; height: auto; display: block; }
-        p { color: #555; }
-        a { color: #007bff; text-decoration: none; font-weight: bold; }
-      </style>
+        <title>ESP CAM Takana Juo - 102</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                text-align: center;
+                margin: 20px;
+                background-color: #CC3322; /* Latar Belakang Merah */
+                color: #FFED00;            /* WARNA TEKS DEFAULT MENJADI KUNING */
+            }
+            h1 {
+                /* Tidak perlu setting warna lagi karena sudah ikut body */
+            }
+            #stream-container {
+                border: 2px solid #FFED00; /* Border juga diganti kuning agar serasi */
+                display: inline-block;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                max-width: 95%;
+            }
+            img {
+                max-width: 100%;
+                height: auto;
+                display: block;
+            }
+            /* Style untuk 'p' tidak perlu warna lagi, karena akan ikut 'body' */
+            p {
+                font-weight: bold; /* Dibuat tebal agar lebih mudah dibaca */
+            }
+        </style>
     </head>
     <body>
-      <h1>ESP32-CAM Face Detection (Stabil)</h1>
-      <div id="stream-container">
-        <img src="/stream">
-      </div>
-      <p>Saat wajah terdeteksi, foto akan disimpan ke SD Card.</p>
-      <p>Kualitas foto: 640x480 (sama dengan stream)</p>
+        <h1>Dashboard ESP CAM Takana Juo - 102</h1>
+        <div id="stream-container">
+            <img src="/stream">
+        </div>
+        <p>Saat wajah terdeteksi, foto akan disimpan ke SD Card.</p>
+        <p>Kualitas foto: 640x480 (sama dengan stream)</p>
     </body>
     </html>
-  )rawliteral";
+)rawliteral";
   return httpd_resp_send(req, html.c_str(), html.length());
 }
 
-// Fungsi untuk memulai server web
+// Fungsi untuk memulai server
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.stack_size = 8192;
   httpd_handle_t server = NULL;
   httpd_uri_t index_uri = { "/", HTTP_GET, index_handler, NULL };
   httpd_uri_t stream_uri = { "/stream", HTTP_GET, stream_handler, NULL };
@@ -232,9 +256,8 @@ void setup() {
 
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  Serial.println("\n--- ESP32-CAM Face Detect & Save (VGA) ---");
+  Serial.println("\n--- ESP32-CAM Face Detect & Save (VGA Efisien) ---");
 
-  // BARU: Nonaktifkan lampu flash LED secara permanen
   pinMode(FLASH_GPIO_NUM, OUTPUT);
   digitalWrite(FLASH_GPIO_NUM, LOW);
 
@@ -250,7 +273,7 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   
   config.pixel_format = PIXFORMAT_RGB565;
-  config.frame_size = STREAM_FRAME_SIZE; // Menggunakan resolusi VGA
+  config.frame_size = STREAM_FRAME_SIZE;
   
   config.jpeg_quality = STREAM_JPEG_QUALITY;
   config.fb_count = 2;
@@ -259,16 +282,29 @@ void setup() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Inisialisasi kamera gagal dengan error 0x%x", err);
+    Serial.printf("Inisialisasi kamera gagal: 0x%x", err);
     ESP.restart();
   }
-  Serial.println("Inisialisasi kamera berhasil");
+  Serial.println("Kamera berhasil diinisialisasi");
 
   if (!SD_MMC.begin()) {
     Serial.println("Gagal me-mount SD Card. Fitur simpan foto dinonaktifkan.");
     save_to_sd_enabled = 0;
   } else {
     Serial.println("SD Card berhasil diinisialisasi.");
+    
+    // --- BLOK KODE BARU UNTUK PENOMORAN PERSISTEN ---
+    photo_count = 0; // Mulai pengecekan dari 0
+    while (true) {
+      String path = "/face_capture_" + String(photo_count) + ".jpg";
+      if (!SD_MMC.exists(path)) {
+        // Jika file tidak ada, kita temukan nomor berikutnya yang kosong.
+        break; 
+      }
+      photo_count++; // Jika file ada, coba nomor berikutnya.
+    }
+    Serial.printf("Penyimpanan foto akan dimulai dari: face_capture_%d.jpg\n", photo_count);
+    // ----------------------------------------------------
   }
 
   WiFi.begin(ssid, password);
@@ -282,7 +318,7 @@ void setup() {
 
   startCameraServer();
   Serial.println("Server kamera dimulai.");
-  Serial.printf("Buka browser dan akses: http://%s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("Buka browser: http://%s\n", WiFi.localIP().toString().c_str());
 }
 
 void loop() {
